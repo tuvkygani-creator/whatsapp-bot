@@ -1,0 +1,12 @@
+{
+  "name": "whatsapp-bot-server",
+  "version": "1.0.0",
+  "description": "24/7 WhatsApp MCP Bridge",
+  "main": "index.js",
+  "scripts": {
+    "start": "npx -y wweb-mcp -m standalone"
+  },
+  "dependencies": {
+    "wweb-mcp": "latest"
+  }
+}
