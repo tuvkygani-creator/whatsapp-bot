@@ -3,9 +3,8 @@ import qrcode from 'qrcode';
 import baileysPkg from '@whiskeysockets/baileys';
 import pino from 'pino';
 
-// Baileys ES Module ஏற்றுமதி முறை
 const makeWASocket = baileysPkg.default || baileysPkg;
-const { useMultiFileAuthState, DisconnectReason } = baileysPkg;
+const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileysPkg;
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -14,11 +13,18 @@ let isConnected = false;
 
 async function startWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
-    
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`Using Baileys version: ${version.join('.')}, isLatest: ${isLatest}`);
+
     const sock = makeWASocket({
+        version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false
+        printQRInTerminal: false,
+        browser: ['Ubuntu', 'Chrome', '20.0.04'],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -32,11 +38,15 @@ async function startWhatsApp() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed. Reconnecting:', shouldReconnect);
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log(`Connection closed (code ${statusCode}). Reconnecting in 5s:`, shouldReconnect);
             isConnected = false;
+
             if (shouldReconnect) {
-                startWhatsApp();
+                setTimeout(() => {
+                    startWhatsApp();
+                }, 5000);
             }
         } else if (connection === 'open') {
             console.log('WhatsApp Bot: Connected successfully via Baileys!');
@@ -45,17 +55,14 @@ async function startWhatsApp() {
         }
     });
 
-    // Auto-Reply பகுதி
+    // Auto-reply
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         for (const msg of messages) {
-            if (!msg.message) continue;
+            if (!msg.message || msg.key.fromMe) continue;
 
             const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim().toLowerCase();
             const from = msg.key.remoteJid;
-
-            // பாட் தன் சொந்த மெசேஜுக்கே மீண்டும் பதில் சொல்லி லூப் ஆவதைத் தடுக்க
-            if (msg.key.fromMe) continue;
 
             console.log(`Received message: "${text}" from ${from}`);
 
@@ -74,7 +81,7 @@ app.get('/', (req, res) => {
         res.send(`
             <div style="text-align:center;margin-top:60px;font-family:sans-serif;">
                 <h1 style="color:#25D366;font-size:35px;">✅ WhatsApp Bot Connected Successfully!</h1>
-                <p style="font-size:18px;color:#555;">பாட் தற்போது Baileys மூலம் ஆன்லைனில் உள்ளது. மெசேஜ் அனுப்பினால் உடனடிப் பதில் வரும்.</p>
+                <p style="font-size:18px;color:#555;">பாட் தற்போது ஆன்லைனில் உள்ளது. மெசேஜ் அனுப்பினால் பதில் வரும்.</p>
             </div>
         `);
     } else if (qrImage) {
@@ -82,7 +89,7 @@ app.get('/', (req, res) => {
             <div style="text-align:center;margin-top:50px;font-family:sans-serif;">
                 <h2>Scan with WhatsApp (Baileys):</h2>
                 <img src="${qrImage}" style="width:300px;height:300px;border:2px solid #ccc;padding:10px;border-radius:10px;"/>
-                <p>Refresh after scanning.</p>
+                <p>Scan this image using your mobile WhatsApp.</p>
             </div>
         `);
     } else {
