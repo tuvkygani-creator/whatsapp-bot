@@ -1,84 +1,92 @@
 import express from 'express';
 import qrcode from 'qrcode';
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import pino from 'pino';
 
 const app = express();
 const port = process.env.PORT || 3002;
-let botStatus = 'Starting...';
 let qrImage = '';
+let isConnected = false;
 
-const client = new Client({
-    authStrategy: new LocalAuth({
-        dataPath: './.wwebjs_auth'
-    }),
-    puppeteer: {
-        headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--no-zygote',
-            '--single-process'
-        ]
-    }
-});
-
-client.on('qr', (qr) => {
-    qrcode.toDataURL(qr, (err, url) => {
-        qrImage = url;
-        botStatus = 'QR_READY';
-        console.log('New QR code generated!');
+async function startWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
+    
+    const sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false
     });
-});
 
-client.on('authenticated', () => {
-    botStatus = 'CONNECTED';
-    console.log('WhatsApp Bot: Authenticated successfully!');
-});
+    sock.ev.on('creds.update', saveCreds);
 
-client.on('ready', () => {
-    botStatus = 'CONNECTED';
-    console.log('WhatsApp Bot: Ready and Online!');
-});
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-// பிறர் அனுப்பும் மெசேஜ் மற்றும் நாம் அனுப்பும் மெசேஜ் இரண்டையும் கவனிக்கும்
-client.on('message_create', async (msg) => {
-    // பாட் தன் சொந்த பதிலுக்கே மீண்டும் பதில் சொல்லி லூப் ஆவதைத் தடுக்க:
-    if (msg.body.includes('வணக்கம்! நான் உங்கள் AI வாட்ஸ்அப் உதவியாளர்')) return;
+        if (qr) {
+            qrImage = await qrcode.toDataURL(qr);
+            console.log('New Baileys QR code generated on web page!');
+        }
 
-    const text = msg.body.trim().toLowerCase();
-    console.log(`Message caught: ${text} from ${msg.from}`);
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed. Reconnecting:', shouldReconnect);
+            isConnected = false;
+            if (shouldReconnect) {
+                startWhatsApp();
+            }
+        } else if (connection === 'open') {
+            console.log('WhatsApp Bot: Connected successfully via Baileys!');
+            isConnected = true;
+            qrImage = '';
+        }
+    });
 
-    if (text === 'hi' || text === 'hello') {
-        await client.sendMessage(msg.from, 'வணக்கம்! நான் உங்கள் AI வாட்ஸ்அப் உதவியாளர் (WhatsApp Bot). உங்களுக்கு என்ன உதவி வேண்டும்?');
-        console.log('Auto-reply sent successfully!');
-    }
-});
+    // Auto-Reply பகுதி
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
+        for (const msg of messages) {
+            if (!msg.message) continue;
+
+            const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim().toLowerCase();
+            const from = msg.key.remoteJid;
+
+            // பாட் தன் சொந்த மெசேஜுக்கே பதில் அனுப்பாமல் தடுக்க
+            if (msg.key.fromMe) continue;
+
+            console.log(`Received message: "${text}" from ${from}`);
+
+            if (text === 'hi' || text === 'hello') {
+                await sock.sendMessage(from, { 
+                    text: 'வணக்கம்! நான் உங்கள் AI வாட்ஸ்அப் உதவியாளர் (WhatsApp Bot). உங்களுக்கு என்ன உதவி வேண்டும்?' 
+                });
+                console.log('Auto-reply sent successfully!');
+            }
+        }
+    });
+}
 
 app.get('/', (req, res) => {
-    if (botStatus === 'CONNECTED') {
+    if (isConnected) {
         res.send(`
             <div style="text-align:center;margin-top:60px;font-family:sans-serif;">
                 <h1 style="color:#25D366;font-size:35px;">✅ WhatsApp Bot Connected Successfully!</h1>
-                <p style="font-size:18px;color:#555;">பாட் தற்போது ஆன்லைனில் உள்ளது. மெசேஜ் அனுப்பினால் பதில் வரும்.</p>
+                <p style="font-size:18px;color:#555;">பாட் தற்போது Baileys மூலம் ஆன்லைனில் உள்ளது. மெசேஜ் அனுப்பினால் உடனடிப் பதில் வரும்.</p>
             </div>
         `);
-    } else if (botStatus === 'QR_READY' && qrImage) {
+    } else if (qrImage) {
         res.send(`
             <div style="text-align:center;margin-top:50px;font-family:sans-serif;">
-                <h2>Scan with WhatsApp:</h2>
+                <h2>Scan with WhatsApp (Baileys):</h2>
                 <img src="${qrImage}" style="width:300px;height:300px;border:2px solid #ccc;padding:10px;border-radius:10px;"/>
+                <p>Refresh after scanning.</p>
             </div>
         `);
     } else {
-        res.send('<h2 style="text-align:center;margin-top:50px;font-family:sans-serif;">Starting WhatsApp Bot... Please refresh in 10 seconds.</h2>');
+        res.send('<h2 style="text-align:center;margin-top:50px;font-family:sans-serif;">Starting Baileys Server... Please refresh in 5 seconds.</h2>');
     }
 });
 
 app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
-    client.initialize();
+    startWhatsApp();
 });
