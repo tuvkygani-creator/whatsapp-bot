@@ -2,13 +2,13 @@ import express from 'express';
 import qrcode from 'qrcode';
 import baileysPkg from '@whiskeysockets/baileys';
 import pino from 'pino';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const makeWASocket = baileysPkg.default || baileysPkg;
 const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileysPkg;
 
-// Gemini AI Client துவக்கம் (Render Environment Variable-ல் GEMINI_API_KEY இருக்க வேண்டும்)
-const ai = new GoogleGenAI();
+// Render Environment Variables-ல் இருந்து API Key எடுக்கப்படுகிறது
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -18,16 +18,15 @@ let isConnected = false;
 // AI பதில் தயாரிக்கும் செயல்பாடு
 async function getAIReply(userPrompt) {
     try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: userPrompt,
-            config: {
-                systemInstruction: `நீங்கள் கணேசன் அவர்களின் வாட்ஸ்அப் AI உதவியாளர். 
+        const model = genAI.getGenerativeModel({ 
+            model: 'gemini-1.5-flash',
+            systemInstruction: `நீங்கள் கணேசன் அவர்களின் வாட்ஸ்அப் AI உதவியாளர். 
 பயனர்கள் கேட்கும் கேள்விகளுக்கு நட்பாகவும், தெளிவாகவும் தமிழில் அல்லது அவர்கள் பேசும் மொழியில் (Tanglish/English) சுருக்கமாகப் பதிலளிக்கவும். 
 யாராவது கணேசனைத் தொடர்பு கொள்ள வேண்டும் என்று கேட்டால்: "கணேசன் அவர்கள் தற்போது வேலையாக இருக்கிறார், உங்கள் செய்தி அவருக்குத் தெரிவிக்கப்படும். அவசரமென்றால் உங்கள் தொடர்பு எண்ணையும் காரணத்தையும் இங்கே பதிவிடுங்கள்" என்று கண்ணியமாகப் பதில் அளிக்கவும்.`
-            }
         });
-        return response.text;
+
+        const result = await model.generateContent(userPrompt);
+        return result.response.text();
     } catch (err) {
         console.error('Gemini API Error:', err);
         return 'மன்னிக்கவும், தற்போது பதிலளிப்பதில் சிறிய தொழில்நுட்பத் தடை உள்ளது. சிறிது நேரத்தில் கணேசன் உங்களுடன் இணைவார்.';
@@ -78,7 +77,7 @@ async function startWhatsApp() {
         }
     });
 
-    // வரும் மெசேஜ்களுக்கு Gemini AI மூலம் பதில் அனுப்புதல்
+    // Gemini AI மூலம் தானாகப் பதிலளிக்கும் பகுதி
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         for (const msg of messages) {
@@ -91,7 +90,6 @@ async function startWhatsApp() {
 
             console.log(`Received message from ${from}: "${text}"`);
 
-            // Gemini AI பதிலை உருவாக்குதல்
             const aiResponse = await getAIReply(text);
 
             await sock.sendMessage(from, { text: aiResponse });
