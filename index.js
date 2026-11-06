@@ -2,14 +2,37 @@ import express from 'express';
 import qrcode from 'qrcode';
 import baileysPkg from '@whiskeysockets/baileys';
 import pino from 'pino';
+import { GoogleGenAI } from '@google/genai';
 
 const makeWASocket = baileysPkg.default || baileysPkg;
 const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileysPkg;
+
+// Gemini AI Client துவக்கம் (Render Environment Variable-ல் GEMINI_API_KEY இருக்க வேண்டும்)
+const ai = new GoogleGenAI();
 
 const app = express();
 const port = process.env.PORT || 3002;
 let qrImage = '';
 let isConnected = false;
+
+// AI பதில் தயாரிக்கும் செயல்பாடு
+async function getAIReply(userPrompt) {
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: userPrompt,
+            config: {
+                systemInstruction: `நீங்கள் கணேசன் அவர்களின் வாட்ஸ்அப் AI உதவியாளர். 
+பயனர்கள் கேட்கும் கேள்விகளுக்கு நட்பாகவும், தெளிவாகவும் தமிழில் அல்லது அவர்கள் பேசும் மொழியில் (Tanglish/English) சுருக்கமாகப் பதிலளிக்கவும். 
+யாராவது கணேசனைத் தொடர்பு கொள்ள வேண்டும் என்று கேட்டால்: "கணேசன் அவர்கள் தற்போது வேலையாக இருக்கிறார், உங்கள் செய்தி அவருக்குத் தெரிவிக்கப்படும். அவசரமென்றால் உங்கள் தொடர்பு எண்ணையும் காரணத்தையும் இங்கே பதிவிடுங்கள்" என்று கண்ணியமாகப் பதில் அளிக்கவும்.`
+            }
+        });
+        return response.text;
+    } catch (err) {
+        console.error('Gemini API Error:', err);
+        return 'மன்னிக்கவும், தற்போது பதிலளிப்பதில் சிறிய தொழில்நுட்பத் தடை உள்ளது. சிறிது நேரத்தில் கணேசன் உங்களுடன் இணைவார்.';
+    }
+}
 
 async function startWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
@@ -55,23 +78,24 @@ async function startWhatsApp() {
         }
     });
 
-    // Auto-reply
+    // வரும் மெசேஜ்களுக்கு Gemini AI மூலம் பதில் அனுப்புதல்
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         for (const msg of messages) {
             if (!msg.message || msg.key.fromMe) continue;
 
-            const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim().toLowerCase();
+            const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
             const from = msg.key.remoteJid;
 
-            console.log(`Received message: "${text}" from ${from}`);
+            if (!text) continue;
 
-            if (text === 'hi' || text === 'hello') {
-                await sock.sendMessage(from, { 
-                    text: 'வணக்கம்! நான் உங்கள் AI வாட்ஸ்அப் உதவியாளர் (WhatsApp Bot). உங்களுக்கு என்ன உதவி வேண்டும்?' 
-                });
-                console.log('Auto-reply sent successfully!');
-            }
+            console.log(`Received message from ${from}: "${text}"`);
+
+            // Gemini AI பதிலை உருவாக்குதல்
+            const aiResponse = await getAIReply(text);
+
+            await sock.sendMessage(from, { text: aiResponse });
+            console.log(`AI Reply sent to ${from}`);
         }
     });
 }
@@ -80,16 +104,15 @@ app.get('/', (req, res) => {
     if (isConnected) {
         res.send(`
             <div style="text-align:center;margin-top:60px;font-family:sans-serif;">
-                <h1 style="color:#25D366;font-size:35px;">✅ WhatsApp Bot Connected Successfully!</h1>
-                <p style="font-size:18px;color:#555;">பாட் தற்போது ஆன்லைனில் உள்ளது. மெசேஜ் அனுப்பினால் பதில் வரும்.</p>
+                <h1 style="color:#25D366;font-size:35px;">✅ WhatsApp Gemini AI Bot Online!</h1>
+                <p style="font-size:18px;color:#555;">பாட் தற்போது Gemini AI உடன் முழுமையாக இணைந்து இயங்குகிறது.</p>
             </div>
         `);
     } else if (qrImage) {
         res.send(`
             <div style="text-align:center;margin-top:50px;font-family:sans-serif;">
-                <h2>Scan with WhatsApp (Baileys):</h2>
+                <h2>Scan with WhatsApp:</h2>
                 <img src="${qrImage}" style="width:300px;height:300px;border:2px solid #ccc;padding:10px;border-radius:10px;"/>
-                <p>Scan this image using your mobile WhatsApp.</p>
             </div>
         `);
     } else {
