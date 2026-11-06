@@ -1,7 +1,11 @@
 import express from 'express';
 import qrcode from 'qrcode';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import baileysPkg from '@whiskeysockets/baileys';
 import pino from 'pino';
+
+// Baileys ES Module ஏற்றுமதி முறை
+const makeWASocket = baileysPkg.default || baileysPkg;
+const { useMultiFileAuthState, DisconnectReason } = baileysPkg;
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -50,7 +54,7 @@ async function startWhatsApp() {
             const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim().toLowerCase();
             const from = msg.key.remoteJid;
 
-            // பாட் தன் சொந்த மெசேஜுக்கே பதில் அனுப்பாமல் தடுக்க
+            // பாட் தன் சொந்த மெசேஜுக்கே மீண்டும் பதில் சொல்லி லூப் ஆவதைத் தடுக்க
             if (msg.key.fromMe) continue;
 
             console.log(`Received message: "${text}" from ${from}`);
